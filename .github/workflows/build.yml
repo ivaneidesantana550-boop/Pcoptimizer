@@ -18,12 +18,23 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Extrair zip (se existir)
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Recurse -Filter "rhzin-optimizer-exe*.zip" | Select-Object -First 1
+          if ($zip) {
+            Write-Host "Extraindo $($zip.FullName)"
+            Expand-Archive -Path $zip.FullName -DestinationPath "$PWD/fonte" -Force
+          } else {
+            Write-Host "Sem zip, usando os arquivos do repositorio."
+          }
+
       - name: Localizar projetos
         shell: pwsh
         run: |
           $opt = Get-ChildItem -Recurse -Filter Optimizer.csproj | Select-Object -First 1
           $gen = Get-ChildItem -Recurse -Filter Gerador.csproj | Select-Object -First 1
-          if (-not $opt -or -not $gen) { Write-Error "csproj nao encontrado"; exit 1 }
+          if (-not $opt -or -not $gen) { Write-Error "csproj nao encontrado"; Get-ChildItem -Recurse | Select-Object -First 50 FullName; exit 1 }
           "OPT=$($opt.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "GEN=$($gen.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "ROOT=$($opt.Directory.Parent.Parent.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
