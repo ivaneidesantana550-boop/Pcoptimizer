@@ -1,24 +1,218 @@
-name: Gerar EXE
+name: Gerar RHzin Optimizer
+
 on:
   push:
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  CONFIGURATION: "Release"
+
 jobs:
   build:
+    name: Compilar aplicativos Windows
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - shell: pwsh
-        run: Expand-Archive -Path rhzin-optimizer-exe.zip -DestinationPath . -Force
-      - uses: actions/setup-dotnet@v4
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET 8
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
-      - run: dotnet publish rhzin-optimizer-exe/src/Optimizer/Optimizer.csproj -c Release -o out
-      - run: dotnet publish rhzin-optimizer-exe/src/Gerador/Gerador.csproj -c Release -o out
-      - shell: pwsh
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Verificar estrutura do projeto
+        shell: pwsh
+        run: |
+          $requiredFiles = @(
+            "src/Optimizer/Optimizer.csproj",
+            "src/Optimizer/Program.cs",
+            "src/Optimizer/MainForm.cs",
+            "src/Optimizer/Sys.cs",
+            "src/Optimizer/FeatureCatalog.cs",
+            "src/Optimizer/Security.cs",
+            "src/Optimizer/MachineProfile.cs",
+            "src/Gerador/Gerador.csproj"
+          )
+
+          foreach ($file in $requiredFiles) {
+            if (!(Test-Path $file)) {
+              Write-Error "Arquivo obrigatório não encontrado: $file"
+            }
+
+            Write-Host "OK: $file"
+          }
+
+      - name: Restaurar dependências do otimizador
+        run: |
+          dotnet restore src/Optimizer/Optimizer.csproj
+
+      - name: Restaurar dependências do gerador
+        run: |
+          dotnet restore src/Gerador/Gerador.csproj
+
+      - name: Compilar o otimizador
+        run: |
+          dotnet build src/Optimizer/Optimizer.csproj `
+            --configuration $env:CONFIGURATION `
+            --no-restore `
+            --verbosity minimal
+
+      - name: Compilar o gerador de licença
+        run: |
+          dotnet build src/Gerador/Gerador.csproj `
+            --configuration $env:CONFIGURATION `
+            --no-restore `
+            --verbosity minimal
+
+      - name: Publicar RHzin Optimizer como EXE único
+        run: |
+          dotnet publish src/Optimizer/Optimizer.csproj `
+            --configuration $env:CONFIGURATION `
+            --runtime win-x64 `
+            --self-contained true `
+            --output out/Optimizer `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false
+
+      - name: Publicar gerador de licença como EXE único
+        run: |
+          dotnet publish src/Gerador/Gerador.csproj `
+            --configuration $env:CONFIGURATION `
+            --runtime win-x64 `
+            --self-contained true `
+            --output out/Gerador `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false
+
+      - name: Montar pacote final
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force pacote | Out-Null
-          Copy-Item -Path out/RHzin_Optimizer.exe, out/RHzin_Gerador_Licenca.exe, rhzin-optimizer-exe/LEIA-ME.txt -Destination pacote/
-      - uses: actions/upload-artifact@v4
+
+          $optimizer = Get-ChildItem `
+            -Path out/Optimizer `
+            -Filter "RHzin_Optimizer.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if (!$optimizer) {
+            $optimizer = Get-ChildItem `
+              -Path out/Optimizer `
+              -Filter "*.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          $generator = Get-ChildItem `
+            -Path out/Gerador `
+            -Filter "RHzin_Gerador_Licenca.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if (!$generator) {
+            $generator = Get-ChildItem `
+              -Path out/Gerador `
+              -Filter "*.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (!$optimizer) {
+            Write-Error "RHzin Optimizer.exe não foi gerado."
+          }
+
+          if (!$generator) {
+            Write-Error "Gerador de licença.exe não foi gerado."
+          }
+
+          Copy-Item `
+            $optimizer.FullName `
+            "pacote/RHzin_Optimizer.exe" `
+            -Force
+
+          Copy-Item `
+            $generator.FullName `
+            "pacote/RHzin_Gerador_Licenca.exe" `
+            -Force
+
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" "pacote/README.md" -Force
+          }
+
+          if (Test-Path "LEIA-ME.txt") {
+            Copy-Item "LEIA-ME.txt" "pacote/LEIA-ME.txt" -Force
+          }
+
+          @"
+          RHzin Optimizer
+
+          Arquivos:
+          - RHzin_Optimizer.exe: painel principal do otimizador
+          - RHzin_Gerador_Licenca.exe: gerador de licenças
+
+          Recursos:
+          - 100 funções de Registro
+          - 100 funções de Tweaks
+          - Perfil automático da máquina
+          - Recomendações de BIOS
+          - Microsoft Defender e MRT
+          - Verificações de vírus e malware
+          - Backup e restauração do Registro
+          - Preparação segura do Windows oficial
+
+          Observação:
+          O programa não altera firmware da BIOS, não formata discos
+          e não instala Windows silenciosamente.
+          "@ | Set-Content "pacote/INSTRUCOES.txt" -Encoding UTF8
+
+      - name: Verificar arquivos publicados
+        shell: pwsh
+        run: |
+          $files = @(
+            "pacote/RHzin_Optimizer.exe",
+            "pacote/RHzin_Gerador_Licenca.exe"
+          )
+
+          foreach ($file in $files) {
+            if (!(Test-Path $file)) {
+              Write-Error "Arquivo não encontrado: $file"
+            }
+
+            $size = (Get-Item $file).Length
+
+            if ($size -le 0) {
+              Write-Error "Arquivo vazio: $file"
+            }
+
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash
+
+            Write-Host ""
+            Write-Host "Arquivo: $file"
+            Write-Host "Tamanho: $size bytes"
+            Write-Host "SHA256: $hash"
+          }
+
+      - name: Publicar executáveis
+        uses: actions/upload-artifact@v4
         with:
-          name: RHzin_Optimizer_4_0
+          name: RHzin-Optimizer-Windows
           path: pacote/*
+          if-no-files-found: error
+          retention-days: 30
