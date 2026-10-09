@@ -21,10 +21,7 @@ jobs:
       - name: Instalar .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: |
-            6.0.x
-            8.0.x
-            9.0.x
+          dotnet-version: 8.0.x
 
       - name: Localizar e extrair ZIP
         shell: pwsh
@@ -32,54 +29,49 @@ jobs:
           $ErrorActionPreference = "Stop"
           $base = $env:GITHUB_WORKSPACE
 
-          $zip = Get-ChildItem $base -Filter "rhzin-optimizer-exe*.zip" -File -Recurse |
+          Write-Host "Procurando arquivos ZIP..."
+
+          $zips = @(
+            Get-ChildItem $base -Filter "*.zip" -File -Recurse |
             Where-Object {
-              $_.FullName -notmatch '\\.git\\|\\bin\\|\\obj\\|\\extraido\\'
-            } |
-            Select-Object -First 1
+              $_.FullName -notmatch '\\.git\\|\\bin\\|\\obj\\|\\extraido\\|\\saida\\'
+            }
+          )
 
-          if (-not $zip) {
-            $zip = Get-ChildItem $base -Filter "*.zip" -File -Recurse |
-              Where-Object {
-                $_.FullName -notmatch '\\.git\\|\\bin\\|\\obj\\|\\extraido\\'
-              } |
-              Select-Object -First 1
-          }
-
-          if (-not $zip) {
+          if ($zips.Count -eq 0) {
+            Write-Host "Arquivos presentes no repositorio:"
             Get-ChildItem $base -Recurse -File |
               Select-Object -First 100 FullName
-            throw "Nenhum arquivo ZIP foi encontrado. Envie o ZIP original para o repositorio."
+            throw "Nenhum ZIP encontrado. Envie o arquivo ZIP original ao repositorio."
           }
 
-          Write-Host "ZIP encontrado: $($zip.FullName)"
+          $zip = $zips | Select-Object -First 1
+          Write-Host "ZIP selecionado: $($zip.FullName)"
 
-          $extract = Join-Path $base "extraido"
+          $dest = Join-Path $base "extraido"
 
-          if (Test-Path $extract) {
-            Remove-Item $extract -Recurse -Force
+          if (Test-Path $dest) {
+            Remove-Item $dest -Recurse -Force
           }
 
-          New-Item -ItemType Directory -Path $extract -Force |
+          New-Item -ItemType Directory -Path $dest -Force |
             Out-Null
 
           Expand-Archive -LiteralPath $zip.FullName `
-            -DestinationPath $extract -Force
+            -DestinationPath $dest -Force
 
-          Write-Host "Conteudo extraido:"
-          Get-ChildItem $extract -Recurse -File |
+          Write-Host "Arquivos extraidos:"
+          Get-ChildItem $dest -Recurse -File |
             Select-Object -First 100 FullName
 
-      - name: Restaurar e verificar projetos
+      - name: Localizar projetos
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $root = Join-Path $env:GITHUB_WORKSPACE "extraido"
-
           $projects = @(Get-ChildItem $root -Filter "*.csproj" -File -Recurse)
 
           if ($projects.Count -eq 0) {
-            throw "Nenhum arquivo .csproj foi encontrado dentro do ZIP."
+            throw "Nenhum projeto C# .csproj foi encontrado no ZIP."
           }
 
           Write-Host "Projetos encontrados:"
@@ -96,38 +88,24 @@ jobs:
             Select-Object -First 1
 
           if (-not $optimizer) {
-            throw "Optimizer.csproj nao encontrado. Confira o nome do projeto."
+            throw "Optimizer.csproj nao encontrado."
           }
 
           if (-not $gerador) {
-            throw "Gerador.csproj nao encontrado. Confira o nome do projeto."
+            throw "Gerador.csproj nao encontrado."
           }
-
-          Write-Host "Configuracao do Optimizer.csproj:"
-          Get-Content $optimizer.FullName
-
-          Write-Host "Configuracao do Gerador.csproj:"
-          Get-Content $gerador.FullName
 
       - name: Compilar Optimizer
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $root = Join-Path $env:GITHUB_WORKSPACE "extraido"
-
           $project = Get-ChildItem $root -Filter "Optimizer.csproj" -File -Recurse |
             Select-Object -First 1
-
           $out = Join-Path $env:GITHUB_WORKSPACE "saida\Optimizer"
 
           New-Item -ItemType Directory -Path $out -Force |
             Out-Null
-
-          dotnet restore $project.FullName
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao restaurar o projeto Optimizer."
-          }
 
           dotnet publish $project.FullName `
             -c Release `
@@ -138,10 +116,10 @@ jobs:
             -o $out
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao compilar o Optimizer. Confira as mensagens acima."
+            throw "A compilacao do Optimizer falhou."
           }
 
-          Write-Host "Arquivos gerados pelo Optimizer:"
+          Write-Host "Resultado da compilacao:"
           Get-ChildItem $out -Recurse -File |
             Select-Object FullName, Length
 
@@ -150,20 +128,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $root = Join-Path $env:GITHUB_WORKSPACE "extraido"
-
           $project = Get-ChildItem $root -Filter "Gerador.csproj" -File -Recurse |
             Select-Object -First 1
-
           $out = Join-Path $env:GITHUB_WORKSPACE "saida\Gerador"
 
           New-Item -ItemType Directory -Path $out -Force |
             Out-Null
-
-          dotnet restore $project.FullName
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao restaurar o projeto Gerador."
-          }
 
           dotnet publish $project.FullName `
             -c Release `
@@ -174,10 +144,10 @@ jobs:
             -o $out
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Falha ao compilar o Gerador de Licenca. Confira as mensagens acima."
+            throw "A compilacao do Gerador de Licenca falhou."
           }
 
-          Write-Host "Arquivos gerados pelo Gerador:"
+          Write-Host "Resultado da compilacao:"
           Get-ChildItem $out -Recurse -File |
             Select-Object FullName, Length
 
@@ -186,40 +156,23 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $base = $env:GITHUB_WORKSPACE
-
           $optimizerDir = Join-Path $base "saida\Optimizer"
           $geradorDir = Join-Path $base "saida\Gerador"
           $dest = Join-Path $base "RHzin-Optimizer-Windows"
           $zipFinal = Join-Path $base "RHzin-Optimizer-Windows.zip"
 
-          Write-Host "Verificando os executaveis..."
-
-          foreach ($dir in @($optimizerDir, $geradorDir)) {
-            if (-not (Test-Path $dir)) {
-              throw "Pasta de compilacao nao encontrada: $dir"
-            }
-
-            Write-Host "Conteudo de $dir"
-            Get-ChildItem $dir -Recurse -File |
-              Select-Object FullName, Length
-          }
-
-          $optimizer = Get-ChildItem $optimizerDir `
-            -Filter "*.exe" -File -Recurse |
-            Sort-Object Length -Descending |
+          $optimizer = Get-ChildItem $optimizerDir -Filter "*.exe" -File -Recurse |
             Select-Object -First 1
 
-          $gerador = Get-ChildItem $geradorDir `
-            -Filter "*.exe" -File -Recurse |
-            Sort-Object Length -Descending |
+          $gerador = Get-ChildItem $geradorDir -Filter "*.exe" -File -Recurse |
             Select-Object -First 1
 
           if (-not $optimizer) {
-            throw "O projeto Optimizer nao gerou nenhum EXE. Consulte a configuracao OutputType e os arquivos listados acima."
+            throw "Nenhum EXE foi gerado para o Optimizer. Consulte a etapa de compilacao."
           }
 
           if (-not $gerador) {
-            throw "O projeto Gerador nao gerou nenhum EXE. Consulte a configuracao OutputType e os arquivos listados acima."
+            throw "Nenhum EXE foi gerado para o Gerador. Consulte a etapa de compilacao."
           }
 
           if (Test-Path $dest) {
@@ -230,10 +183,10 @@ jobs:
             Out-Null
 
           Copy-Item $optimizer.FullName `
-            (Join-Path $dest "RHzin_Optimizer.exe") -Force
+            (Join-Path $dest "RHzin_Optimizer.exe")
 
           Copy-Item $gerador.FullName `
-            (Join-Path $dest "RHzin_Gerador_Licenca.exe") -Force
+            (Join-Path $dest "RHzin_Gerador_Licenca.exe")
 
           $readme = Get-ChildItem (Join-Path $base "extraido") `
             -Filter "LEIA-ME.txt" -File -Recurse |
@@ -241,17 +194,13 @@ jobs:
 
           if ($readme) {
             Copy-Item $readme.FullName `
-              (Join-Path $dest "LEIAME.txt") -Force
-          }
-
-          if (Test-Path $zipFinal) {
-            Remove-Item $zipFinal -Force
+              (Join-Path $dest "LEIAME.txt")
           }
 
           Compress-Archive -Path "$dest\*" `
             -DestinationPath $zipFinal -Force
 
-          Write-Host "Pacote final criado:"
+          Write-Host "Pacote criado:"
           Get-Item $zipFinal | Select-Object FullName, Length
 
       - name: Disponibilizar download
