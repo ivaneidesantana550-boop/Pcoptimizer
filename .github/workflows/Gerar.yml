@@ -1,0 +1,43 @@
+
+name: Gerar ZIP do RHzin Optimizer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gerar-zip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar arquivos
+        uses: actions/checkout@v5
+
+      - name: Criar ZIP
+        run: |
+          mkdir -p pacote
+          cp RHzin_Optimizer.exe pacote/
+          cp RHzin_Gerador_Licenca.exe pacote/
+          cat > pacote/LEIAME.txt << 'EOF'
+          RHZIN OPTIMIZER
+
+          Arquivos incluidos:
+          - RHzin_Optimizer.exe
+          - RHzin_Gerador_Licenca.exe
+          - LEIAME.txt
+
+          Extraia os arquivos ZIP antes de executar.
+          EOF
+          cd pacote
+          zip -r ../RHzin-Optimizer.zip .
+
+      - name: Disponibilizar ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: RHzin-Optimizer
+          path: RHzin-Optimizer.zip
+          if-no-files-found: error
