@@ -1,0 +1,57 @@
+name: Gerar ZIP RHzin Optimizer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositorio
+        uses: actions/checkout@v5
+
+      - name: Criar pacote
+        shell: bash
+        run: |
+          set -e
+          mkdir -p pacote
+
+          OPT=$(find . -type f -name 'RHzin_Optimizer.exe' -print -quit)
+          LIC=$(find . -type f -name 'RHzin_Gerador_Licenca.exe' -print -quit)
+
+          if [ -z "$OPT" ]; then
+            echo "ERRO: RHzin_Optimizer.exe nao encontrado no repositorio."
+            exit 1
+          fi
+
+          if [ -z "$LIC" ]; then
+            echo "ERRO: RHzin_Gerador_Licenca.exe nao encontrado no repositorio."
+            exit 1
+          fi
+
+          cp "$OPT" pacote/
+          cp "$LIC" pacote/
+
+          cat > pacote/LEIAME.txt << 'EOF'
+          RHZIN OPTIMIZER
+
+          Conteudo:
+          - RHzin_Optimizer.exe
+          - RHzin_Gerador_Licenca.exe
+          - LEIAME.txt
+          EOF
+
+          cd pacote
+          zip -r ../RHzin-Optimizer.zip .
+
+      - name: Publicar ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: RHzin-Optimizer
+          path: RHzin-Optimizer.zip
