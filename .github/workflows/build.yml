@@ -1,23 +1,51 @@
 name: Gerar EXE
+
 on:
   push:
+    branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - shell: pwsh
-        run: Expand-Archive -Path rhzin-optimizer-exe.zip -DestinationPath . -Force
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - run: dotnet publish rhzin-optimizer-exe/src/Optimizer/Optimizer.csproj -c Release -o out
-      - run: dotnet publish rhzin-optimizer-exe/src/Gerador/Gerador.csproj -c Release -o out
-      - shell: pwsh
+
+      - name: Localizar projetos
+        shell: pwsh
+        run: |
+          $opt = Get-ChildItem -Recurse -Filter Optimizer.csproj | Select-Object -First 1
+          $gen = Get-ChildItem -Recurse -Filter Gerador.csproj | Select-Object -First 1
+          if (-not $opt -or -not $gen) { Write-Error "csproj nao encontrado"; exit 1 }
+          "OPT=$($opt.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "GEN=$($gen.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "ROOT=$($opt.Directory.Parent.Parent.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Publicar o otimizador
+        run: dotnet publish "$env:OPT" -c Release -r win-x64 --self-contained true -o out
+
+      - name: Publicar o gerador de licencas
+        run: dotnet publish "$env:GEN" -c Release -r win-x64 --self-contained true -o out
+
+      - name: Montar o pacote
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force pacote | Out-Null
-          Copy-Item -Path out/RHzin_Optimizer.exe, out/RHzin_Gerador_Licenca.exe, rhzin-optimizer-exe/LEIA-ME.txt -Destination pacote/
+          foreach ($f in "RHzin_Optimizer.exe", "RHzin_Gerador_Licenca.exe") {
+            if (-not (Test-Path "out/$f")) { Write-Error "Faltou $f"; Get-ChildItem out; exit 1 }
+            Copy-Item "out/$f" pacote/
+          }
+          $leia = Join-Path $env:ROOT "LEIA-ME.txt"
+          if (Test-Path $leia) { Copy-Item $leia pacote/ }
+          Get-ChildItem pacote
+
       - uses: actions/upload-artifact@v4
         with:
           name: RHzin_Optimizer_4_0
