@@ -1,9 +1,9 @@
-name: Compilar e Gerar ZIP RHzin
+name: Compilar RHzin e Gerar ZIP
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -21,93 +21,105 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Extrair ZIP original
+      - name: Extrair codigos do ZIP
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path . -Filter '*.zip' -File |
-            Where-Object { $_.Name -like '*rhzin*' } |
-            Select-Object -First 1
+          $root = $env:GITHUB_WORKSPACE
+          $sourceRoot = $root
 
-          if (-not $zip) {
-            throw "Nao encontrei o ZIP original na raiz do repositorio."
-          }
-
-          Expand-Archive -Path $zip.FullName `
-            -DestinationPath "$PWD\projeto" -Force
-
-          Get-ChildItem .\projeto -Recurse -Filter *.csproj
-
-      - name: Compilar os dois programas
-        shell: pwsh
-        run: |
-          $projects = Get-ChildItem .\projeto -Recurse -Filter *.csproj
-
-          $optimizer = $projects |
-            Where-Object { $_.Name -eq 'Optimizer.csproj' } |
-            Select-Object -First 1
-
-          $gerador = $projects |
-            Where-Object { $_.Name -eq 'Gerador.csproj' } |
+          $optimizer = Get-ChildItem $root -Recurse -Filter Optimizer.csproj |
             Select-Object -First 1
 
           if (-not $optimizer) {
-            throw "Optimizer.csproj nao encontrado dentro do ZIP."
+            $zip = Get-ChildItem $root -File -Filter '*.zip' |
+              Where-Object { $_.Name -like 'rhzin-optimizer-exe*' } |
+              Select-Object -First 1
+
+            if (-not $zip) {
+              throw "ZIP original rhzin-optimizer-exe nao encontrado."
+            }
+
+            $sourceRoot = Join-Path $env:RUNNER_TEMP 'rhzin-source'
+            New-Item -ItemType Directory -Force $sourceRoot | Out-Null
+            Expand-Archive $zip.FullName $sourceRoot -Force
           }
 
-          if (-not $gerador) {
-            throw "Gerador.csproj nao encontrado dentro do ZIP."
+          $optimizer = Get-ChildItem $sourceRoot -Recurse -Filter Optimizer.csproj |
+            Select-Object -First 1
+          $gerador = Get-ChildItem $sourceRoot -Recurse -Filter Gerador.csproj |
+            Select-Object -First 1
+
+          if (-not $optimizer) { throw "Optimizer.csproj nao encontrado." }
+          if (-not $gerador) { throw "Gerador.csproj nao encontrado." }
+
+          "OPTIMIZER_PROJECT=$($optimizer.FullName)" >> $env:GITHUB_ENV
+          "GERADOR_PROJECT=$($gerador.FullName)" >> $env:GITHUB_ENV
+
+          $readme = Get-ChildItem $sourceRoot -Recurse -File |
+            Where-Object { $_.Name -in @('LEIA-ME.txt','LEIAME.txt') } |
+            Select-Object -First 1
+
+          if ($readme) {
+            "README_SOURCE=$($readme.FullName)" >> $env:GITHUB_ENV
           }
 
-          dotnet publish $optimizer.FullName `
-            -c Release -r win-x64 --self-contained true `
-            -p:PublishSingleFile=true `
-            -o "$PWD\saida\Optimizer"
-
-          dotnet publish $gerador.FullName `
-            -c Release -r win-x64 --self-contained true `
-            -p:PublishSingleFile=true `
-            -o "$PWD\saida\Gerador"
-
-      - name: Criar LEIAME e ZIP final
+      - name: Compilar RHzin Optimizer
         shell: pwsh
         run: |
-          $opt = Get-ChildItem .\saida\Optimizer -Filter *.exe |
+          dotnet publish "$env:OPTIMIZER_PROJECT" `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o "$env:RUNNER_TEMP\saida\Optimizer"
+
+      - name: Compilar gerador de licenca
+        shell: pwsh
+        run: |
+          dotnet publish "$env:GERADOR_PROJECT" `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o "$env:RUNNER_TEMP\saida\Gerador"
+
+      - name: Criar ZIP final
+        shell: pwsh
+        run: |
+          $base = "$env:RUNNER_TEMP\saida"
+          $pacote = "$env:RUNNER_TEMP\pacote"
+
+          New-Item -ItemType Directory -Force $pacote | Out-Null
+
+          $opt = Get-ChildItem "$base\Optimizer" -Filter '*.exe' |
             Select-Object -First 1
-          $lic = Get-ChildItem .\saida\Gerador -Filter *.exe |
+          $lic = Get-ChildItem "$base\Gerador" -Filter '*.exe' |
             Select-Object -First 1
 
-          if (-not $opt -or -not $lic) {
-            throw "Um ou ambos os executaveis nao foram gerados."
-          }
+          if (-not $opt) { throw "O EXE do otimizador nao foi gerado." }
+          if (-not $lic) { throw "O EXE do gerador nao foi gerado." }
 
-          New-Item -ItemType Directory -Force .\pacote | Out-Null
+          Copy-Item $opt.FullName "$pacote\RHzin_Optimizer.exe"
+          Copy-Item $lic.FullName "$pacote\RHzin_Gerador_Licenca.exe"
 
-          Copy-Item $opt.FullName .\pacote\RHzin_Optimizer.exe
-          Copy-Item $lic.FullName .\pacote\RHzin_Gerador_Licenca.exe
+          if ($env:README_SOURCE -and (Test-Path $env:README_SOURCE)) {
+            Copy-Item $env:README_SOURCE "$pacote\LEIAME.txt"
+          } else {
+            @"
+          RHZIN OPTIMIZER 4.0
 
-          @"
-          RHZIN OPTIMIZER
-
-          Conteudo:
+          Arquivos:
           - RHzin_Optimizer.exe
           - RHzin_Gerador_Licenca.exe
-          - LEIAME.txt
 
           Extraia os arquivos antes de executar.
-          "@ | Set-Content .\pacote\LEIAME.txt
+          "@ | Set-Content "$pacote\LEIAME.txt"
+          }
 
-          Compress-Archive -Path .\pacote\* `
-            -DestinationPath .\RHzin-Optimizer.zip -Force
+          Compress-Archive -Path "$pacote\*" `
+            -DestinationPath "$env:GITHUB_WORKSPACE\RHzin-Optimizer.zip" -Force
 
-      - name: Disponibilizar ZIP final
+      - name: Disponibilizar ZIP para download
         uses: actions/upload-artifact@v4
         with:
           name: RHzin-Optimizer-Windows
           path: RHzin-Optimizer.zip
           if-no-files-found: error
-          compression-level: 0
-```
-
-**Importante:** esse código só vai funcionar se o ZIP original realmente contiver os projetos `Optimizer.csproj` e `Gerador.csproj`. Se não contiver, nenhum YAML consegue inventar os programas que estão faltando.
-
-O melhor próximo passo é **anexar aqui o arquivo `rhzin-optimizer-exe (1).zip`**. Assim posso verificar a estrutura real e ajustar o workflow aos nomes dos arquivos que você tem.
