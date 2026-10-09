@@ -1,0 +1,24 @@
+name: Gerar EXE
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: Expand-Archive -Path rhzin-optimizer-exe.zip -DestinationPath . -Force
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet publish rhzin-optimizer-exe/src/Optimizer/Optimizer.csproj -c Release -o out
+      - run: dotnet publish rhzin-optimizer-exe/src/Gerador/Gerador.csproj -c Release -o out
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pacote | Out-Null
+          Copy-Item -Path out/RHzin_Optimizer.exe, out/RHzin_Gerador_Licenca.exe, rhzin-optimizer-exe/LEIA-ME.txt -Destination pacote/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RHzin_Optimizer_4_0
+          path: pacote/*
