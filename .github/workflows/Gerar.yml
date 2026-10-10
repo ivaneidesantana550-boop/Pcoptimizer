@@ -1,43 +1,229 @@
-
-name: Gerar ZIP do RHzin Optimizer
+name: Gerar RHzin Optimizer e APK privado
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, master]
+
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  DOTNET_VERSION: "8.0.x"
+  JAVA_VERSION: "17"
+  CONFIGURATION: Release
+
 jobs:
-  gerar-zip:
+  windows:
+    name: Compilar painel Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Validar estrutura
+        shell: pwsh
+        run: |
+          $files = @(
+            "src/Optimizer/Optimizer.csproj",
+            "src/Optimizer/MainForm.cs",
+            "src/Optimizer/Auth.cs",
+            "src/Optimizer/FeatureCatalog.cs",
+            "src/Optimizer/Security.cs",
+            "src/Optimizer/MachineProfile.cs"
+          )
+
+          foreach ($file in $files) {
+            if (!(Test-Path $file)) {
+              throw "Arquivo não encontrado: $file"
+            }
+          }
+
+      - name: Restaurar e compilar o painel
+        run: |
+          dotnet restore src/Optimizer/Optimizer.csproj
+          dotnet build src/Optimizer/Optimizer.csproj `
+            -c $env:CONFIGURATION `
+            --no-restore
+
+      - name: Publicar o painel como EXE único
+        run: |
+          dotnet publish src/Optimizer/Optimizer.csproj `
+            -c $env:CONFIGURATION `
+            -r win-x64 `
+            --self-contained true `
+            -o out/optimizer `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false
+
+      - name: Montar pacote Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pacote-windows | Out-Null
+
+          $exe = Get-ChildItem `
+            out/optimizer `
+            -Filter "*.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (!$exe) {
+            throw "O executável do painel não foi gerado."
+          }
+
+          Copy-Item `
+            $exe.FullName `
+            pacote-windows/RHzin_Optimizer.exe `
+            -Force
+
+          if (Test-Path README.md) {
+            Copy-Item README.md pacote-windows/README.md -Force
+          }
+
+      - name: Publicar executável Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: RHzin-Optimizer-Windows
+          path: pacote-windows
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Compilar APK privado do gerador de Keys
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar arquivos
-        uses: actions/checkout@v5
+      - name: Baixar código
+        uses: actions/checkout@v4
 
-      - name: Criar ZIP
+      - name: Verificar PIN privado
+        shell: bash
+        env:
+          OWNER_PIN: ${{ secrets.RHZIN_OWNER_PIN }}
         run: |
-          mkdir -p pacote
-          cp RHzin_Optimizer.exe pacote/
-          cp RHzin_Gerador_Licenca.exe pacote/
-          cat > pacote/LEIAME.txt << 'EOF'
-          RHZIN OPTIMIZER
+          if [ -z "$OWNER_PIN" ]; then
+            echo "Configure o secret RHZIN_OWNER_PIN no GitHub."
+            exit 1
+          fi
 
-          Arquivos incluidos:
-          - RHzin_Optimizer.exe
-          - RHzin_Gerador_Licenca.exe
-          - LEIAME.txt
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-          Extraia os arquivos ZIP antes de executar.
-          EOF
-          cd pacote
-          zip -r ../RHzin-Optimizer.zip .
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Disponibilizar ZIP
+      - name: Aceitar licenças Android
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Configurar Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Verificar projeto Android
+        shell: bash
+        run: |
+          test -f src/KeyGeneratorAndroid/settings.gradle.kts
+          test -f src/KeyGeneratorAndroid/app/build.gradle.kts
+          test -f src/KeyGeneratorAndroid/app/src/main/java/com/rhzin/keygenerator/MainActivity.kt
+
+      - name: Gerar APK privado
+        working-directory: src/KeyGeneratorAndroid
+        env:
+          OWNER_PIN: ${{ secrets.RHZIN_OWNER_PIN }}
+        run: |
+          gradle clean assembleRelease `
+            --no-daemon `
+            -PownerPin="$OWNER_PIN"
+
+      - name: Preparar APK
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p pacote-apk
+
+          APK=$(find \
+            src/KeyGeneratorAndroid/app/build/outputs/apk/release \
+            -name "*.apk" \
+            -type f |
+            head -1)
+
+          if [ -z "$APK" ]; then
+            echo "APK não foi gerado."
+            exit 1
+          fi
+
+          cp "$APK" \
+            pacote-apk/RHzin_KeyGenerator_Private.apk
+
+          sha256sum \
+            pacote-apk/RHzin_KeyGenerator_Private.apk \
+            > pacote-apk/RHzin_KeyGenerator_Private.apk.sha256
+
+          printf "%s\n" \
+            "APK privado do proprietário. Não distribua aos clientes." \
+            > pacote-apk/LEIA-ME.txt
+
+      - name: Publicar APK privado
         uses: actions/upload-artifact@v4
         with:
-          name: RHzin-Optimizer
-          path: RHzin-Optimizer.zip
+          name: RHzin-KeyGenerator-Private-APK
+          path: pacote-apk
           if-no-files-found: error
+          retention-days: 30
+
+  pacote:
+    name: Criar ZIP final
+    needs:
+      - windows
+      - android
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar painel Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: RHzin-Optimizer-Windows
+          path: pacote-final
+
+      - name: Baixar APK privado
+        uses: actions/download-artifact@v4
+        with:
+          name: RHzin-KeyGenerator-Private-APK
+          path: pacote-final
+
+      - name: Criar ZIP
+        shell: bash
+        run: |
+          printf "%s\n" \
+            "No painel do cliente, abra Informações do sistema e execute Código curto deste PC. Envie o código RZ-XXXXXXXXXXXX ao proprietário. No APK, informe o código, o cliente e o PIN." \
+            > pacote-final/INSTRUCOES.txt
+
+          cd pacote-final
+
+          zip -r ../RHzin-Optimizer-Completo.zip .
+
+      - name: Publicar ZIP final
+        uses: actions/upload-artifact@v4
+        with:
+          name: RHzin-Optimizer-Completo
+          path: RHzin-Optimizer-Completo.zip
+          if-no-files-found: error
+          retention-days: 30
