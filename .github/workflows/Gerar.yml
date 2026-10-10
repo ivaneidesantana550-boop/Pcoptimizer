@@ -1,4 +1,4 @@
-name: Gerar RHzin Optimizer e APK privado
+name: Gerar EXE e APK privado
 
 on:
   push:
@@ -11,84 +11,60 @@ on:
 permissions:
   contents: read
 
-env:
-  DOTNET_VERSION: "8.0.x"
-  CONFIGURATION: "Release"
-
 jobs:
   windows:
-    name: Gerar EXE do painel
+    name: Gerar painel Windows
     runs-on: windows-latest
 
     steps:
       - name: Baixar código
         uses: actions/checkout@v4
 
-      - name: Configurar .NET
+      - name: Configurar .NET 8
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-version: "8.0.x"
 
       - name: Localizar projeto Windows
         shell: pwsh
         run: |
-          $csproj = Get-ChildItem `
+          $file = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
             -Recurse `
             -Filter "Optimizer.csproj" `
             -File |
             Select-Object -First 1
 
-          if (!$csproj) {
-            Write-Host "Arquivos encontrados:"
-            Get-ChildItem $env:GITHUB_WORKSPACE -Recurse -File |
-              Select-Object -ExpandProperty FullName
-
-            throw "Optimizer.csproj não foi encontrado."
+          if (!$file) {
+            throw "Optimizer.csproj não encontrado."
           }
 
-          # Estrutura esperada:
-          # PASTA_DO_PROJETO/src/Optimizer/Optimizer.csproj
-          $projectRoot = $csproj.Directory.Parent.Parent.FullName
+          $root = $file.Directory.Parent.Parent.FullName
 
-          $relativeRoot = $projectRoot.Substring(
+          $relative = $root.Substring(
             $env:GITHUB_WORKSPACE.Length
           ).TrimStart("\", "/")
 
-          "PROJECT_ROOT=$relativeRoot" |
-            Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Encoding utf8 `
-              -Append
+          "PROJECT_ROOT=$relative" >> $env:GITHUB_ENV
 
-          Write-Host "Projeto encontrado em:"
-          Write-Host $projectRoot
+          Write-Host "Projeto encontrado em: $root"
 
-      - name: Verificar arquivos
+      - name: Verificar projeto Windows
         shell: pwsh
         run: |
           $root = Join-Path `
             $env:GITHUB_WORKSPACE `
             $env:PROJECT_ROOT
 
-          $required = @(
-            "src/Optimizer/Optimizer.csproj",
-            "src/Optimizer/MainForm.cs",
-            "src/Optimizer/Auth.cs",
-            "src/Optimizer/FeatureCatalog.cs",
-            "src/Optimizer/Security.cs",
-            "src/Optimizer/MachineProfile.cs"
-          )
+          $project = Join-Path `
+            $root `
+            "src/Optimizer/Optimizer.csproj"
 
-          foreach ($file in $required) {
-            $fullPath = Join-Path $root $file
-
-            if (!(Test-Path $fullPath)) {
-              throw "Arquivo obrigatório não encontrado: $fullPath"
-            }
-
-            Write-Host "OK: $fullPath"
+          if (!(Test-Path $project)) {
+            throw "Projeto não encontrado: $project"
           }
+
+          Write-Host "OK: $project"
 
       - name: Compilar painel
         shell: pwsh
@@ -104,10 +80,10 @@ jobs:
           dotnet restore $project
 
           dotnet build $project `
-            --configuration $env:CONFIGURATION `
+            -c Release `
             --no-restore
 
-      - name: Publicar EXE
+      - name: Gerar EXE
         shell: pwsh
         run: |
           $root = Join-Path `
@@ -123,10 +99,10 @@ jobs:
             "out/optimizer"
 
           dotnet publish $project `
-            --configuration $env:CONFIGURATION `
-            --runtime win-x64 `
+            -c Release `
+            -r win-x64 `
             --self-contained true `
-            --output $output `
+            -o $output `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true `
@@ -147,7 +123,7 @@ jobs:
           New-Item `
             -ItemType Directory `
             -Force `
-            -Path "pacote-windows" |
+            -Path "windows-package" |
             Out-Null
 
           $exe = Get-ChildItem `
@@ -162,16 +138,15 @@ jobs:
 
           Copy-Item `
             $exe.FullName `
-            "pacote-windows/RHzin_Optimizer.exe" `
+            "windows-package/RHzin_Optimizer.exe" `
             -Force
 
       - name: Publicar EXE
         uses: actions/upload-artifact@v4
         with:
           name: RHzin-Optimizer-Windows
-          path: pacote-windows
+          path: windows-package
           if-no-files-found: error
-          retention-days: 30
 
   android:
     name: Gerar APK privado
@@ -187,7 +162,7 @@ jobs:
           OWNER_PIN: ${{ secrets.RHZIN_OWNER_PIN }}
         run: |
           if [ -z "$OWNER_PIN" ]; then
-            echo "ERRO: configure o secret RHZIN_OWNER_PIN."
+            echo "Configure o secret RHZIN_OWNER_PIN."
             exit 1
           fi
 
@@ -203,22 +178,16 @@ jobs:
             -quit)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERRO: projeto Android não encontrado."
-
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 7 \
-              -type f |
-              sort
-
+            echo "Projeto Android não encontrado."
+            echo "Esperado: src/KeyGeneratorAndroid/settings.gradle.kts"
             exit 1
           fi
 
           ANDROID_ROOT=$(dirname "$SETTINGS")
 
-          echo "ANDROID_ROOT=$ANDROID_ROOT" \
-            >> "$GITHUB_ENV"
+          echo "ANDROID_ROOT=$ANDROID_ROOT" >> "$GITHUB_ENV"
 
-          echo "Projeto Android:"
+          echo "Projeto Android encontrado:"
           echo "$ANDROID_ROOT"
 
       - name: Configurar Java 17
@@ -240,6 +209,15 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Verificar arquivos Android
+        shell: bash
+        run: |
+          test -f "$ANDROID_ROOT/settings.gradle.kts"
+          test -f "$ANDROID_ROOT/build.gradle.kts"
+          test -f "$ANDROID_ROOT/app/build.gradle.kts"
+          test -f "$ANDROID_ROOT/app/src/main/AndroidManifest.xml"
+          test -f "$ANDROID_ROOT/app/src/main/java/com/rhzin/keygenerator/MainActivity.kt"
+
       - name: Compilar APK privado
         shell: bash
         env:
@@ -258,7 +236,7 @@ jobs:
         run: |
           set -e
 
-          mkdir -p pacote-apk
+          mkdir -p android-package
 
           APK=$(find \
             "$ANDROID_ROOT/app/build/outputs/apk/release" \
@@ -268,30 +246,26 @@ jobs:
             -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERRO: APK não foi gerado."
+            echo "APK não foi gerado."
             exit 1
           fi
 
           cp "$APK" \
-            "pacote-apk/RHzin_KeyGenerator_Private.apk"
+            android-package/RHzin_KeyGenerator_Private.apk
 
           sha256sum \
-            "pacote-apk/RHzin_KeyGenerator_Private.apk" \
-            > "pacote-apk/RHzin_KeyGenerator_Private.apk.sha256"
-
-          echo "APK privado do proprietário." \
-            > "pacote-apk/LEIA-ME.txt"
+            android-package/RHzin_KeyGenerator_Private.apk \
+            > android-package/RHzin_KeyGenerator_Private.apk.sha256
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: RHzin-KeyGenerator-Private-APK
-          path: pacote-apk
+          path: android-package
           if-no-files-found: error
-          retention-days: 30
 
   zip-final:
-    name: Criar ZIP completo
+    name: Criar ZIP final
     needs:
       - windows
       - android
@@ -303,37 +277,28 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: RHzin-Optimizer-Windows
-          path: pacote-final
+          path: final-package
 
       - name: Baixar APK
         uses: actions/download-artifact@v4
         with:
           name: RHzin-KeyGenerator-Private-APK
-          path: pacote-final
+          path: final-package
 
       - name: Criar ZIP
         shell: bash
         run: |
-          echo "No painel do cliente, abra:" \
-            > pacote-final/INSTRUCOES.txt
+          echo "RHzin Optimizer" > final-package/INSTRUCOES.txt
+          echo "O cliente deve enviar o código RZ-XXXXXXXXXXXX." >> final-package/INSTRUCOES.txt
+          echo "Use o APK privado para gerar LOGIN, SENHA e KEY." >> final-package/INSTRUCOES.txt
 
-          echo "Informações do sistema > Código curto deste PC" \
-            >> pacote-final/INSTRUCOES.txt
-
-          echo "Envie o código RZ-XXXXXXXXXXXX ao proprietário." \
-            >> pacote-final/INSTRUCOES.txt
-
-          echo "No APK, informe o código, nome do cliente e PIN." \
-            >> pacote-final/INSTRUCOES.txt
-
-          cd pacote-final
+          cd final-package
 
           zip -r ../RHzin-Optimizer-Completo.zip .
 
-      - name: Publicar ZIP final
+      - name: Publicar ZIP completo
         uses: actions/upload-artifact@v4
         with:
           name: RHzin-Optimizer-Completo
           path: RHzin-Optimizer-Completo.zip
           if-no-files-found: error
-          retention-days: 30
